@@ -19,27 +19,36 @@ def _format(label: str, before, after):
 def main():
     parser = argparse.ArgumentParser(description="Measure Protocol-X compression for a single message.")
     parser.add_argument("text", help="User message to encode")
-    parser.add_argument("--dictionary", default=Path(__file__).resolve().parents[1] / "dictionary.json", type=Path)
+    parser.add_argument(
+        "--dictionary",
+        default=Path(__file__).resolve().parents[1] / "dictionary.json",
+        type=Path,
+    )
     parser.add_argument("--model", help="Model name hint for token counting (e.g. gpt-4o-mini)")
     args = parser.parse_args()
 
     encoder = ProtocolEncoder(str(args.dictionary))
-    mapping_instruction = encoder.build_mapping_instruction()
-    encoded_text = encoder.encode(args.text)
+    used_words = set()
+    encoded_text = encoder.encode(args.text, used_words)
+    mapping_instruction = encoder.build_mapping_instruction(used_words)
 
     counter = TokenCounter(args.model)
 
     before_user = counter.count_messages([{ "role": "user", "content": args.text }])
     after_user = counter.count_messages([{ "role": "user", "content": encoded_text }])
 
-    before_total = counter.count_messages([
-        { "role": "system", "content": mapping_instruction },
-        { "role": "user", "content": args.text },
-    ])
-    after_total = counter.count_messages([
-        { "role": "system", "content": mapping_instruction },
-        { "role": "user", "content": encoded_text },
-    ])
+    pre_total = []
+    post_total = []
+    if mapping_instruction:
+        mapping_msg = {"role": "system", "content": mapping_instruction}
+        pre_total.append(mapping_msg)
+        post_total.append(mapping_msg)
+
+    pre_total.append({"role": "user", "content": args.text})
+    post_total.append({"role": "user", "content": encoded_text})
+
+    before_total = counter.count_messages(pre_total)
+    after_total = counter.count_messages(post_total)
 
     print("--- Encoded message ---")
     print(encoded_text)

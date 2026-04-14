@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from .decoder import ProtocolDecoder
 from .encoder import ProtocolEncoder
@@ -31,10 +31,6 @@ class PXClient:
         self.encoder = ProtocolEncoder(self.dict_path)
         self.decoder = ProtocolDecoder(self.dict_path)
         self.optimizer = PXOptimizer(self.dict_path)
-
-        self._dict_signature = self.encoder.dictionary_signature
-        self._mapping_instruction = self.encoder.build_mapping_instruction()
-        self._mapping_sent_signature: Optional[str] = None
 
         self.chat = self._Chat(self)
 
@@ -94,9 +90,6 @@ class PXClient:
     def _refresh_dictionary(self) -> None:
         self.encoder.reload_dictionary()
         self.decoder.reload_dictionary()
-        self._dict_signature = self.encoder.dictionary_signature
-        self._mapping_instruction = self.encoder.build_mapping_instruction()
-        self._mapping_sent_signature = None
 
     class _Chat:
         def __init__(self, parent: "PXClient"):
@@ -119,26 +112,19 @@ class PXClient:
             if additions_total:
                 self.parent._refresh_dictionary()
 
-            if (
-                self.parent._mapping_instruction
-                and self.parent._mapping_sent_signature != self.parent._dict_signature
-            ):
-                messages.insert(
-                    0,
-                    {
-                        "role": "system",
-                        "content": self.parent._mapping_instruction,
-                    },
-                )
-                self.parent._mapping_sent_signature = self.parent._dict_signature
-
             pre_encode_messages: List[Message] = [dict(m) for m in messages]
             encoded_messages: List[Message] = []
+            used_words: Set[str] = set()
+
             for msg in pre_encode_messages:
                 msg_copy = dict(msg)
                 if msg_copy.get("content") and msg_copy.get("role") in {"user", "assistant"}:
-                    msg_copy["content"] = self.parent.encoder.encode(msg_copy["content"])
+                    msg_copy["content"] = self.parent.encoder.encode(
+                        msg_copy["content"], used_words
+                    )
                 encoded_messages.append(msg_copy)
+
+            mapping_instruction = self.parent.encoder.build_mapping_instruction(used_words)
 
             counter = TokenCounter(kwargs.get("model"))
             pre_user_stats = counter.count_messages(
@@ -147,11 +133,29 @@ class PXClient:
             post_user_stats = counter.count_messages(
                 msg for msg in encoded_messages if msg.get("role") == "user"
             )
-            pre_total_stats = counter.count_messages(pre_encode_messages)
-            post_total_stats = counter.count_messages(encoded_messages)
+
+            pre_total_messages: List[Message] = []
+            post_total_messages: List[Message] = []
+            if mapping_instruction:
+                mapping_msg = {"role": "system", "content": mapping_instruction}
+                pre_total_messages.append(mapping_msg)
+                post_total_messages.append(mapping_msg)
+
+            for original, encoded in zip(pre_encode_messages, encoded_messages):
+                pre_total_messages.append(original)
+                post_total_messages.append(encoded)
+
+            pre_total_stats = counter.count_messages(pre_total_messages)
+            post_total_stats = counter.count_messages(post_total_messages)
+
+            final_messages = encoded_messages
+            if mapping_instruction:
+                final_messages = [
+                    {"role": "system", "content": mapping_instruction}
+                ] + encoded_messages
 
             new_kwargs = dict(kwargs)
-            new_kwargs["messages"] = encoded_messages
+            new_kwargs["messages"] = final_messages
 
             provider_response = self.parent.provider.create_chat_completion(
                 **new_kwargs
@@ -159,7 +163,12 @@ class PXClient:
 
             provider_response.content = self.parent.decoder.decode(provider_response.content)
 
-            self._report_savings(pre_user_stats, post_user_stats, pre_total_stats, post_total_stats)
+            self._report_savings(
+                pre_user_stats,
+                post_user_stats,
+                pre_total_stats,
+                post_total_stats,
+            )
 
             return provider_response
 
