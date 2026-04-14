@@ -3,6 +3,7 @@ import json
 import os
 import re
 
+
 class ProtocolEncoder:
     def __init__(self, dict_path=None):
         if dict_path is None:
@@ -17,7 +18,7 @@ class ProtocolEncoder:
         print(f"--- PX-ENCODER: Nutze Dictionary unter: {display_path}")
 
     def reload_dictionary(self):
-        """Aktualisiert das geladene Dictionary vom Datenträger."""
+        """Reload the on-disk dictionary."""
         self.dictionary = self._load_dict()
         self._signature = self._compute_signature()
 
@@ -26,16 +27,14 @@ class ProtocolEncoder:
         return self._signature
 
     def build_mapping_instruction(self):
-        """Erzeugt die System-Instruktion mit dem vollständigen Token-Mapping."""
+        """Return the system instruction carrying the token mapping."""
         if not self.dictionary:
             return ""
 
         ordered_items = sorted(self.dictionary.items(), key=lambda item: item[1])
         mappings = " | ".join(f"{token}={word}" for word, token in ordered_items)
         instruction_prefix = (
-            "PX token mode active. Provide a thorough, well-structured answer in German that directly addresses the user request. "
-            "Use the tokens below whenever they express a concept, but write natural sentences around them. "
-            "If vocabulary is missing, answer normally and add \"TOKEN_MISSING\" so the user can extend the mapping."
+            "PX MAP active. Reply in German using mapped tokens when possible; otherwise answer normally and append TOKEN_MISSING."
         )
         return f"{instruction_prefix}\nMAP: {mappings}"
 

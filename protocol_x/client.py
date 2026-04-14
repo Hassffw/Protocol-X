@@ -10,9 +10,11 @@ from .providers import (
     DeepSeekChatProvider,
     OpenAIChatProvider,
 )
+from .token_stats import TokenCounter
 from .types import PXResponse
 
 Message = Dict[str, Any]
+
 
 class PXClient:
     """Wrapper, der Eingaben/Ausgaben per PX-Dictionary komprimiert."""
@@ -107,12 +109,6 @@ class PXClient:
         def create(self, **kwargs: Any) -> PXResponse:
             messages: List[Message] = [dict(m) for m in kwargs.get("messages", [])]
 
-            orig_len = sum(
-                len(m["content"])
-                for m in messages
-                if m.get("role") == "user" and m.get("content")
-            )
-
             additions_total = []
             for msg in messages:
                 if msg.get("role") == "user" and msg.get("content"):
@@ -136,18 +132,23 @@ class PXClient:
                 )
                 self.parent._mapping_sent_signature = self.parent._dict_signature
 
+            pre_encode_messages: List[Message] = [dict(m) for m in messages]
             encoded_messages: List[Message] = []
-            for msg in messages:
+            for msg in pre_encode_messages:
                 msg_copy = dict(msg)
                 if msg_copy.get("content") and msg_copy.get("role") in {"user", "assistant"}:
                     msg_copy["content"] = self.parent.encoder.encode(msg_copy["content"])
                 encoded_messages.append(msg_copy)
 
-            comp_len = sum(
-                len(m["content"])
-                for m in encoded_messages
-                if m.get("role") == "user" and m.get("content")
+            counter = TokenCounter(kwargs.get("model"))
+            pre_user_stats = counter.count_messages(
+                msg for msg in pre_encode_messages if msg.get("role") == "user"
             )
+            post_user_stats = counter.count_messages(
+                msg for msg in encoded_messages if msg.get("role") == "user"
+            )
+            pre_total_stats = counter.count_messages(pre_encode_messages)
+            post_total_stats = counter.count_messages(encoded_messages)
 
             new_kwargs = dict(kwargs)
             new_kwargs["messages"] = encoded_messages
@@ -158,8 +159,43 @@ class PXClient:
 
             provider_response.content = self.parent.decoder.decode(provider_response.content)
 
-            savings = orig_len - comp_len
-            percent = round((savings / orig_len) * 100, 1) if orig_len else 0
-            print(f"⚡ PX-Stats: {orig_len} -> {comp_len} chars (Saved {percent}%)")
+            self._report_savings(pre_user_stats, post_user_stats, pre_total_stats, post_total_stats)
 
             return provider_response
+
+        @staticmethod
+        def _report_savings(
+            pre_user_stats,
+            post_user_stats,
+            pre_total_stats,
+            post_total_stats,
+        ) -> None:
+            def _print(label: str, before_chars: int, after_chars: int, before_tokens, after_tokens) -> None:
+                if before_tokens is not None and after_tokens is not None:
+                    diff = before_tokens - after_tokens
+                    percent = round((diff / before_tokens) * 100, 1) if before_tokens else 0
+                    print(
+                        f"[PX] {label}: {before_tokens} -> {after_tokens} tokens (saved {diff} | {percent}%)"
+                    )
+                else:
+                    diff = before_chars - after_chars
+                    percent = round((diff / before_chars) * 100, 1) if before_chars else 0
+                    print(
+                        f"[PX] {label}: {before_chars} -> {after_chars} chars (saved {diff} | {percent}%)"
+                    )
+
+            _print(
+                "User content",
+                pre_user_stats.characters,
+                post_user_stats.characters,
+                pre_user_stats.tokens,
+                post_user_stats.tokens,
+            )
+
+            _print(
+                "Total payload",
+                pre_total_stats.characters,
+                post_total_stats.characters,
+                pre_total_stats.tokens,
+                post_total_stats.tokens,
+            )

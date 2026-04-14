@@ -21,9 +21,9 @@ class ProtocolDecoder:
             pattern = re.compile(r"^PX!MAP\s+.*?>>\s*", re.DOTALL)
             return re.sub(pattern, "", text)
 
-        prefix = "PX token mode active."
+        prefix = "PX MAP active."
         if text.startswith(prefix):
-            pattern = re.compile(r"^PX token mode active\..*?MAP:\s*.*?(?:\n|$)", re.DOTALL)
+            pattern = re.compile(r"^PX MAP active\..*?MAP:\s*.*?(?:\n|$)", re.DOTALL)
             return re.sub(pattern, "", text)
 
         return text

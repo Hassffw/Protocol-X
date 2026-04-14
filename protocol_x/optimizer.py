@@ -1,7 +1,9 @@
 import json
 import os
 import re
+import string
 from collections import Counter
+
 
 class PXOptimizer:
     def __init__(self, dict_path=None):
@@ -29,18 +31,29 @@ class PXOptimizer:
         with open(self.dict_path, "w", encoding="utf-8") as f:
             json.dump(dictionary, f, indent=2, ensure_ascii=False)
 
+    def _index_to_token(self, index):
+        alphabet = string.ascii_uppercase
+        base = len(alphabet)
+        chars = []
+        n = index
+        while True:
+            n, remainder = divmod(n, base)
+            chars.append(alphabet[remainder])
+            if n == 0:
+                break
+            n -= 1
+        token = "".join(reversed(chars))
+        return token if len(token) > 1 else f"A{token}"
+
     def _get_next_id(self, current_dict):
-        """Findet die nächste freie ID (z.B. §12)."""
-        if not current_dict:
-            return "§1"
-        ids = []
-        for value in current_dict.values():
-            if isinstance(value, str) and value.startswith("§"):
-                try:
-                    ids.append(int(value[1:]))
-                except ValueError:
-                    continue
-        return f"§{max(ids) + 1}" if ids else f"§{len(current_dict) + 1}"
+        """Find next free token ID (AA, AB, ...)."""
+        used = {value for value in current_dict.values() if isinstance(value, str)}
+        index = 0
+        while True:
+            candidate = self._index_to_token(index)
+            if candidate not in used:
+                return candidate
+            index += 1
 
     def learn_from_text(
         self,
@@ -49,13 +62,13 @@ class PXOptimizer:
         top_n=12,
         min_length_single=12,
     ):
-        """Analysiert Text und erweitert das Dictionary um lohnende Tokens."""
+        """Analyze raw text and extend the dictionary with worthwhile terms."""
         if not text:
             return []
 
         dictionary = self._load_dictionary()
         lowered = text.lower()
-        token_pattern = re.compile(r"[a-zäöüß0-9-]{%d,}" % min_length)
+        token_pattern = re.compile(r"[\w-]{%d,}" % min_length, re.UNICODE)
         tokens = token_pattern.findall(lowered)
 
         if not tokens:
@@ -64,7 +77,7 @@ class PXOptimizer:
         additions = []
         already_known = set(dictionary.keys())
 
-        # 1) Einzelwörter priorisieren nach Häufigkeit und Länge
+        # 1) Prefer individual words by frequency and length
         word_counter = Counter(tokens)
         word_candidates = [
             (freq, len(word), word)
@@ -82,10 +95,10 @@ class PXOptimizer:
                 additions.append((word, token_id, freq))
                 already_known.add(word)
 
-        # 2) Häufige Phrasen (2-3 Tokens) aufnehmen
+        # 2) Add frequent multi-word phrases (2-3 tokens)
         if len(additions) < top_n:
-            base_tokens = re.findall(r"[a-zäöüß0-9-]+", lowered)
-            for n in (3, 2):  # längere Phrasen zuerst
+            base_tokens = re.findall(r"[\w-]+", lowered, re.UNICODE)
+            for n in (3, 2):  # longer phrases first
                 if len(additions) >= top_n:
                     break
                 if len(base_tokens) < n:
@@ -114,7 +127,7 @@ class PXOptimizer:
 
         self._save_dictionary(dictionary)
 
-        sample = ", ".join(f"{token}→{word}" for word, token, _ in additions[:3])
-        print(f"🧠 PX-Optimizer: +{len(additions)} Tokens ({sample})")
+        sample = ", ".join(f"{token}->{word}" for word, token, _ in additions[:3])
+        print(f"[PX-Optimizer] +{len(additions)} Tokens ({sample})")
 
         return additions
