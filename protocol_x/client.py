@@ -78,11 +78,19 @@ class PXClient:
         dict_path: Optional[str] = None,
         **client_kwargs: Any,
     ) -> "PXClient":
-        """Baut einen Client für DeepSeek (OpenAI-kompatible APIs)."""
+        """Baut einen Client für DeepSeek über das OpenAI SDK."""
         if client is None:
-            import deepseek
-
-            client = deepseek.DeepSeek(api_key=api_key, **client_kwargs)
+            from openai import OpenAI
+            
+            # DeepSeek ist OpenAI-kompatibel. Wir setzen einfach die base_url.
+            client = OpenAI(
+                api_key=api_key, 
+                base_url="https://api.deepseek.com", 
+                **client_kwargs
+            )
+        
+        # Jetzt funktioniert dein DeepSeekChatProvider, 
+        # weil er self.client.chat.completions.create aufrufen kann.
         provider = DeepSeekChatProvider(client)
         return cls(provider, dict_path=dict_path)
 
