@@ -1,0 +1,73 @@
+import hashlib
+import json
+import os
+import re
+
+class ProtocolEncoder:
+    def __init__(self, dict_path=None):
+        if dict_path is None:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.dict_path = os.path.join(base_dir, "dictionary.json")
+        else:
+            self.dict_path = os.path.abspath(dict_path)
+
+        self.dictionary = self._load_dict()
+        self._signature = self._compute_signature()
+        display_path = self.dict_path.replace("\\", "/")
+        print(f"--- PX-ENCODER: Nutze Dictionary unter: {display_path}")
+
+    def reload_dictionary(self):
+        """Aktualisiert das geladene Dictionary vom Datenträger."""
+        self.dictionary = self._load_dict()
+        self._signature = self._compute_signature()
+
+    @property
+    def dictionary_signature(self):
+        return self._signature
+
+    def build_mapping_instruction(self):
+        """Erzeugt die System-Instruktion mit dem vollständigen Token-Mapping."""
+        if not self.dictionary:
+            return ""
+
+        ordered_items = sorted(self.dictionary.items(), key=lambda item: item[1])
+        mappings = " | ".join(f"{token}={word}" for word, token in ordered_items)
+        instruction_prefix = (
+            "PX token mode active. Provide a thorough, well-structured answer in German that directly addresses the user request. "
+            "Use the tokens below whenever they express a concept, but write natural sentences around them. "
+            "If vocabulary is missing, answer normally and add \"TOKEN_MISSING\" so the user can extend the mapping."
+        )
+        return f"{instruction_prefix}\nMAP: {mappings}"
+
+    def _load_dict(self):
+        if os.path.exists(self.dict_path):
+            try:
+                with open(self.dict_path, "r", encoding="utf-8") as f:
+                    content = json.load(f)
+                    return content if isinstance(content, dict) else {}
+            except Exception as e:
+                print(f"--- PX-DEBUG: Fehler beim Lesen: {e}")
+        return {}
+
+    def _compute_signature(self):
+        serialized = json.dumps(self.dictionary, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+
+    def _pattern_for_word(self, word):
+        if re.search(r"\W", word):
+            return re.compile(re.escape(word), re.IGNORECASE)
+        return re.compile(rf"(?<!\w){re.escape(word)}(?!\w)", re.IGNORECASE)
+
+    def encode(self, text):
+        if not text or len(self.dictionary) == 0:
+            return text
+
+        compressed = text
+        sorted_words = sorted(self.dictionary.keys(), key=len, reverse=True)
+
+        for word in sorted_words:
+            token_id = self.dictionary[word]
+            pattern = self._pattern_for_word(word)
+            compressed = pattern.sub(token_id, compressed)
+
+        return compressed
