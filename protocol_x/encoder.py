@@ -35,10 +35,7 @@ class ProtocolEncoder:
 
         ordered_items = sorted(mapping.items(), key=lambda item: item[1])
         mappings = " | ".join(f"{token}={word}" for word, token in ordered_items)
-        instruction_prefix = (
-            "PX MAP active. Reply in German using mapped tokens when possible; otherwise answer normally and append TOKEN_MISSING."
-        )
-        return f"{instruction_prefix}\nMAP: {mappings}"
+        return f"PX MAP: use tokens on matching words. {mappings}"
 
     def _select_mapping(self, words: Optional[Iterable[str]]) -> Dict[str, str]:
         if words is None:
@@ -87,3 +84,4 @@ class ProtocolEncoder:
             compressed = pattern.sub(token_id, compressed)
 
         return compressed
+

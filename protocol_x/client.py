@@ -1,9 +1,12 @@
+import hashlib
+import json
 import os
 from typing import Any, Dict, List, Optional, Set
 
 from .decoder import ProtocolDecoder
 from .encoder import ProtocolEncoder
 from .optimizer import PXOptimizer
+from .prompt_cleaner import clean_prompt_text
 from .providers import (
     AnthropicChatProvider,
     ChatProvider,
@@ -31,6 +34,8 @@ class PXClient:
         self.encoder = ProtocolEncoder(self.dict_path)
         self.decoder = ProtocolDecoder(self.dict_path)
         self.optimizer = PXOptimizer(self.dict_path)
+
+        self._cache: Dict[str, PXResponse] = {}
 
         self.chat = self._Chat(self)
 
@@ -99,6 +104,34 @@ class PXClient:
         self.encoder.reload_dictionary()
         self.decoder.reload_dictionary()
 
+    def clear_cache(self) -> None:
+        """Drop all cached provider responses."""
+        self._cache.clear()
+
+    @staticmethod
+    def _normalise_for_cache(value: Any) -> Any:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, dict):
+            return {str(k): PXClient._normalise_for_cache(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))}
+        if isinstance(value, (list, tuple)):
+            return [PXClient._normalise_for_cache(v) for v in value]
+        return str(value)
+
+    def _build_cache_key(self, payload: Dict[str, Any]) -> Optional[str]:
+        if payload.get('stream'):
+            return None
+        normalised = {k: self._normalise_for_cache(v) for k, v in payload.items()}
+        wrapper = {
+            'dict': self.encoder.dictionary_signature,
+            'payload': normalised,
+        }
+        try:
+            serialised = json.dumps(wrapper, sort_keys=True, ensure_ascii=False)
+        except TypeError:
+            return None
+        return hashlib.sha1(serialised.encode('utf-8')).hexdigest()
+
     class _Chat:
         def __init__(self, parent: "PXClient"):
             self.completions = parent._Completions(parent)
@@ -108,14 +141,29 @@ class PXClient:
             self.parent = parent
 
         def create(self, **kwargs: Any) -> PXResponse:
-            messages: List[Message] = [dict(m) for m in kwargs.get("messages", [])]
+            raw_messages = kwargs.get("messages", [])
+            messages: List[Message] = [dict(m) for m in raw_messages]
 
             additions_total = []
+            cleaned_messages: List[Message] = []
+
             for msg in messages:
-                if msg.get("role") == "user" and msg.get("content"):
-                    additions = self.parent.optimizer.learn_from_text(msg["content"])
-                    if additions:
-                        additions_total.extend(additions)
+                msg_copy = dict(msg)
+                content = msg_copy.get("content")
+                role = msg_copy.get("role")
+
+                if isinstance(content, str) and role == "user":
+                    cleaned = clean_prompt_text(content)
+                    msg_copy["content"] = cleaned if cleaned else content.strip()
+
+                    if msg_copy["content"]:
+                        additions = self.parent.optimizer.learn_from_text(msg_copy["content"])
+                        if additions:
+                            additions_total.extend(additions)
+
+                cleaned_messages.append(msg_copy)
+
+            messages = cleaned_messages
 
             if additions_total:
                 self.parent._refresh_dictionary()
@@ -126,10 +174,9 @@ class PXClient:
 
             for msg in pre_encode_messages:
                 msg_copy = dict(msg)
-                if msg_copy.get("content") and msg_copy.get("role") in {"user", "assistant"}:
-                    msg_copy["content"] = self.parent.encoder.encode(
-                        msg_copy["content"], used_words
-                    )
+                content = msg_copy.get("content")
+                if isinstance(content, str) and msg_copy.get("role") in {"user", "assistant"}:
+                    msg_copy["content"] = self.parent.encoder.encode(content, used_words)
                 encoded_messages.append(msg_copy)
 
             mapping_instruction = self.parent.encoder.build_mapping_instruction(used_words)
@@ -158,18 +205,34 @@ class PXClient:
 
             final_messages = encoded_messages
             if mapping_instruction:
-                final_messages = [
-                    {"role": "system", "content": mapping_instruction}
-                ] + encoded_messages
+                final_messages = [{"role": "system", "content": mapping_instruction}] + encoded_messages
 
             new_kwargs = dict(kwargs)
             new_kwargs["messages"] = final_messages
+
+            cache_key = self.parent._build_cache_key(new_kwargs)
+            if cache_key and cache_key in self.parent._cache:
+                cached_response = self.parent._cache[cache_key]
+                print("[PX] cache hit: reused response")
+                self._report_savings(
+                    pre_user_stats,
+                    post_user_stats,
+                    pre_total_stats,
+                    post_total_stats,
+                )
+                return PXResponse(content=cached_response.content, raw=cached_response.raw)
 
             provider_response = self.parent.provider.create_chat_completion(
                 **new_kwargs
             )
 
             provider_response.content = self.parent.decoder.decode(provider_response.content)
+
+            if cache_key:
+                self.parent._cache[cache_key] = PXResponse(
+                    content=provider_response.content,
+                    raw=provider_response.raw,
+                )
 
             self._report_savings(
                 pre_user_stats,
@@ -179,7 +242,6 @@ class PXClient:
             )
 
             return provider_response
-
         @staticmethod
         def _report_savings(
             pre_user_stats,

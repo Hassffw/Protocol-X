@@ -26,6 +26,11 @@ class ProtocolDecoder:
             pattern = re.compile(r"^PX MAP active\..*?MAP:\s*.*?(?:\n|$)", re.DOTALL)
             return re.sub(pattern, "", text)
 
+        short_prefix = "PX MAP:"
+        if text.startswith(short_prefix):
+            pattern = re.compile(r"^PX MAP:.*?(?:\n|$)", re.DOTALL)
+            return re.sub(pattern, "", text).lstrip()
+
         return text
 
     def _load_dict(self):
